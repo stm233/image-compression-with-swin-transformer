@@ -31,11 +31,7 @@ from compressai.zoo import models
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from PIL import Image
 import requests
-# from transformers import CLIPProcessor, CLIPVisionModel
 from collections import OrderedDict
-from compressai.models.retinanet.dataloader import CocoDataset, CSVDataset, collater, Resizer, AspectRatioBasedSampler, Augmenter, \
-    Normalizer
-from compressai.models.retinanet import losses
 
 
 class RateDistortionLoss(nn.Module):
@@ -45,9 +41,8 @@ class RateDistortionLoss(nn.Module):
         super().__init__()
         self.mse = nn.MSELoss()
         self.lmbda = lmbda
-        self.focalLoss = losses.FocalLoss()
 
-    def forward(self, input, output, target):
+    def forward(self, input, output):
         N, _, H, W = input.size()
         out = {}
         num_pixels = N * H * W
@@ -56,17 +51,9 @@ class RateDistortionLoss(nn.Module):
             (torch.log(likelihoods).sum() / (-math.log(2) * num_pixels))
             for likelihoods in output["likelihoods"].values()
         )
-        out["mse_loss"],out["feature_loss"]  = 0,0
-        # out["mse_loss"] = self.mse(output["compressH"], output["decompressH"])
-        # out["feature_loss"] = self.mse(output["Student_output_features"][0], output["Teacher_output_features"][0]) + \
-        #                       self.mse(output["Student_output_features"][1], output["Teacher_output_features"][1]) + \
-        #                       self.mse(output["Student_output_features"][2], output["Teacher_output_features"][2])
-        out['obect_loss'] = self.focalLoss(output["Student_classification"],
-                                           output["Student_regression"],
-                                           output["Student_anchors"],
-                                           target)
-        out["loss"] =  0 * (out["mse_loss"] + out["feature_loss"]) + \
-                       self.lmbda * (out['obect_loss'][0] + out['obect_loss'][1]) + 0.04 * out["bpp_loss"]
+        out["mse_loss"] = self.mse(output["x_hat"], input)
+
+        out["loss"] = out["bpp_loss"] + self.lmbda * out["mse_loss"]
 
         return out
 
@@ -101,30 +88,16 @@ def configure_optimizers(net, args):
     """Separate parameters for the main optimizer and the auxiliary optimizer.
     Return two optimizers"""
 
-    # parameters = {
-    #     n
-    #     for n, p in net.named_parameters()
-    #     if not n.endswith(".quantiles") and p.requires_grad and not "teacherNet" and not "studentNet" in n
-    # }
-    # aux_parameters = {
-    #     n
-    #     for n, p in net.named_parameters()
-    #     if n.endswith(".quantiles") and p.requires_grad and not "teacherNet" and not "studentNet" in n
-    # }
-    # print(parameters)
-    # TrainList = ['mu_Swin','sigma_Swin','LRP_Swin','cc_mean_transforms',
-    #              'cc_scale_transforms','lrp_transforms']
-                 # 'h_mean_s','h_scale_s']
-    NotTrainList = ['teacher'] # ,'student'
-    parameters = []
-    for name, param in net.named_parameters():
-        boolTraining = True
-        for paraName in NotTrainList:
-            if paraName in name and param.requires_grad and not name.endswith(".quantiles"):
-                boolTraining = False
-                continue
-        if boolTraining:
-            parameters.append(name)
+    parameters = {
+        n
+        for n, p in net.named_parameters()
+        if not n.endswith(".quantiles") and p.requires_grad and not "teacherNet" and not "studentNet" in n
+    }
+    aux_parameters = {
+        n
+        for n, p in net.named_parameters()
+        if n.endswith(".quantiles") and p.requires_grad and not "teacherNet" and not "studentNet" in n
+    }
 
     aux_parameters = []
     for name, param in net.named_parameters():
@@ -158,35 +131,17 @@ def train_one_epoch(
 ):
     model.train()
     device = next(model.parameters()).device
-
-    # url = "http://images.cocodataset.org/val2017/000000039769.jpg"
-    # clipimage = Image.open(requests.get(url, stream=True).raw)
-    # clipimage = clipimage.resize((256,256))
-    # clipinputs = transforms.ToTensor()(clipimage).unsqueeze(0)
-    # print(clipinputs)
-    # clipProcessor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-    # clipinputs = clipProcessor(images=clipimage, return_tensors="pt")
-    # clipinputs = clipinputs.to(device)
     start = time.time()
 
     for i, d in enumerate(train_dataloader):
-        # d = d.to(device)
-        # original_img, up_x4_img = d
-        inputIMG = d['img']
-        annotations = d['annot']
-        inputIMG = inputIMG.to(device)
-        annotations = annotations.to(device)
-        # original_img = original_img.to(device)
-        # up_x4_img = up_x4_img.to(device)
+        d = d.to(device)
 
         optimizer.zero_grad()
         aux_optimizer.zero_grad()
 
-        # inputData={}
-        # inputData['pixel_values']=clipinputs
-        out_net = model(inputIMG)
+        out_net = model(d)
 
-        out_criterion = criterion(inputIMG,out_net, annotations)
+        out_criterion = criterion(d,out_net)
         out_criterion["loss"].backward()
         if clip_max_norm > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), clip_max_norm)
@@ -201,13 +156,13 @@ def train_one_epoch(
             start = time.time()
             print(
                 f"Train epoch {epoch}: ["
-                f"{i*len(inputIMG)}/{len(train_dataloader.dataset)}"
+                f"{i*len(d)}/{len(train_dataloader.dataset)}"
                 f" ({100. * i / len(train_dataloader):.0f}%)]"
                 f'\tLoss: {out_criterion["loss"].item():.3f} |'
-                # f'\tMSE loss: {out_criterion["mse_loss"].item() :.3f} |'
+                f'\tMSE loss: {out_criterion["mse_loss"].item() :.3f} |'
                 f'\tBpp loss: {out_criterion["bpp_loss"].item():.2f} |'
                 # f'\tfeature loss: {out_criterion["feature_loss"].item():.2f} |'
-                f'\tobect loss: {out_criterion["obect_loss"][0].item():.2f} {out_criterion["obect_loss"][1].item():.2f}|'
+                # f'\tobect loss: {out_criterion["obect_loss"][0].item():.2f} {out_criterion["obect_loss"][1].item():.2f}|'
                 f"\tAux loss: {aux_loss.item():.2f} |"
                 f"\ttime: {enc_time:.1f}"
             )
@@ -224,17 +179,10 @@ def test_epoch(epoch, test_dataloader, model, criterion):
 
     with torch.no_grad():
         for d in test_dataloader:
-            # d = d.to(device)
-            # out_net = model(d)
-            # out_criterion = criterion(out_net, d)
+            d = d.to(device)
+            out_net = model(d)
+            out_criterion = criterion(out_net, d)
 
-            inputIMG = d['img']
-            annotations = d['annot']
-            inputIMG = inputIMG.to(device)
-            annotations = annotations.to(device)
-
-            out_net = model(inputIMG)
-            out_criterion = criterion(inputIMG, out_net, annotations)
 
             aux_loss.update(model.aux_loss())
             bpp_loss.update(out_criterion["bpp_loss"])
@@ -262,13 +210,13 @@ def parse_args(argv):
     parser.add_argument(
         "-m",
         "--model",
-        default="cnn2",
+        default="stf8",
         choices=models.keys(),
         help="Model architecture (default: %(default)s)",
     )
     parser.add_argument(
         "-d", "--dataset", type=str, 
-        default='/media/tianma/0403b42c-caba-4ab7-a362-c335a178175e/supervised-compression-main/dataset/coco2017/',
+        default='/data/Dataset/openimages/',
         help="Training dataset"
     )
     parser.add_argument(
@@ -281,7 +229,7 @@ def parse_args(argv):
     parser.add_argument(
         "-lr",
         "--learning-rate",
-        default=1e-5,
+        default=1e-4,
         type=float,
         help="Learning rate (default: %(default)s)",
     )
@@ -296,16 +244,16 @@ def parse_args(argv):
         "--lambda",
         dest="lmbda",
         type=float,
-        default=1,
+        default=0.0035,
         help="Bit-rate distortion parameter (default: %(default)s)",
     )
     parser.add_argument(
-        "--batch-size", type=int, default=14, help="Batch size (default: %(default)s)"
+        "--batch-size", type=int, default=12, help="Batch size (default: %(default)s)"
     )
     parser.add_argument(
         "--test-batch-size",
         type=int,
-        default=14,
+        default=12,
         help="Test batch size (default: %(default)s)",
     )
     parser.add_argument(
@@ -337,11 +285,9 @@ def parse_args(argv):
         type=float,
         help="gradient clipping max norm (default: %(default)s",
     )
-    parser.add_argument("--teachercheckpoint",
-                         default="./coco_resnet_50_map_0_335_state_dict.pt",  # ./train0008/18.ckpt
-                         type=str, help="Path to a checkpoint")
+
     parser.add_argument("--checkpoint",
-                        default="./cnn2_100/96.ckpt",  # ./train0008/18.ckpt ./stf9_0045/5.ckpt
+                        default="",  # ./train0008/18.ckpt ./stf9_0045/5.ckpt
                         type=str, help="Path to a checkpoint")
     args = parser.parse_args(argv)
     return args
@@ -353,74 +299,44 @@ def main(argv):
     if args.seed is not None:
         torch.manual_seed(args.seed)
         random.seed(args.seed)
-    # tv.transforms.RandomCrop(args.patchsize, pad_if_needed=True)
-    # clipinputs = clipProcessor(images=clipimage, return_tensors="pt")
-    # train_transforms = transforms.Compose(
-    #     [transforms.RandomCrop(args.patch_size, pad_if_needed=True), transforms.ToTensor()]
-    # )
 
-    # train_transforms = transforms.Compose(
-    #     [transforms.CenterCrop(args.patch_size), transforms.ToTensor()]
-    # )
-    #
-    # test_transforms = transforms.Compose(
-    #     [transforms.CenterCrop(args.patch_size), transforms.ToTensor()]
-    # )
-    #
-    # train_dataset = ImageFolder(args.dataset, split="train", transform=train_transforms)
-    # test_dataset = ImageFolder(args.dataset, split="test", transform=test_transforms)
+    train_transforms = transforms.Compose(
+        [transforms.CenterCrop(args.patch_size), transforms.ToTensor()]
+    )
 
-    dataset_train = CocoDataset(args.dataset, set_name='val2017',
-                                transform=transforms.Compose([Normalizer(), Augmenter(), Resizer()]))
-    dataset_val = CocoDataset(args.dataset, set_name='val2017',
-                              transform=transforms.Compose([Normalizer(), Resizer()]))
+    test_transforms = transforms.Compose(
+        [transforms.CenterCrop(args.patch_size), transforms.ToTensor()]
+    )
 
-    sampler = AspectRatioBasedSampler(dataset_train, batch_size=args.batch_size, drop_last=True)
-    train_dataloader = DataLoader(dataset_train, num_workers=args.num_workers, collate_fn=collater, batch_sampler=sampler)
-
-    sampler_val = AspectRatioBasedSampler(dataset_val, batch_size=args.test_batch_size, drop_last=False)
-    test_dataloader = DataLoader(dataset_val, num_workers=args.num_workers, collate_fn=collater, batch_sampler=sampler_val)
+    train_dataset = ImageFolder(args.dataset, split="train", transform=train_transforms)
+    test_dataset = ImageFolder(args.dataset, split="test", transform=test_transforms)
 
     device = "cuda" if args.cuda and torch.cuda.is_available() else "cpu"
 
-    # train_dataloader = DataLoader(
-    #     train_dataset,
-    #     batch_size=args.batch_size,
-    #     num_workers=args.num_workers,
-    #     shuffle=True,
-    #     pin_memory=(device == "cuda"),
-    # )
-    #
-    # test_dataloader = DataLoader(
-    #     test_dataset,
-    #     batch_size=args.test_batch_size,
-    #     num_workers=args.num_workers,
-    #     shuffle=False,
-    #     pin_memory=(device == "cuda"),
-    # )
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        shuffle=True,
+        pin_memory=(device == "cuda"),
+    )
+
+    test_dataloader = DataLoader(
+        test_dataset,
+        batch_size=args.test_batch_size,
+        num_workers=args.num_workers,
+        shuffle=False,
+        pin_memory=(device == "cuda"),
+    )
 
     net = models[args.model]()
     net = net.to(device)
 
     print('GPU:',torch.cuda.device_count())
 
-    # if args.cuda and torch.cuda.device_count() == 1:
-    #     net = CustomDataParallel(net)
-
     optimizer, aux_optimizer = configure_optimizers(net, args)
     lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min", factor=0.3, patience=4)
     criterion = RateDistortionLoss(lmbda=args.lmbda)
-
-    # if args.teachercheckpoint:
-    #     print("Loading", args.teachercheckpoint)
-    #     checkpoint = torch.load(args.teachercheckpoint, map_location=device)
-    #     new_state_dict = OrderedDict()
-    #
-    #     for k, v in checkpoint.items():
-    #         # k = k[13:] # remove 'backbone.body'
-    #         k = 'teacherNet.' + k # add our network name
-    #         new_state_dict[k]=v
-    #     net.load_state_dict(new_state_dict,strict=False)  #
 
     last_epoch = 0
     if args.checkpoint:  # load from previous checkpoint
@@ -428,27 +344,6 @@ def main(argv):
         checkpoint = torch.load(args.checkpoint, map_location=device)
         last_epoch = checkpoint["epoch"] + 1
         new_state_dict = checkpoint["state_dict"]
-        new_state_dict = OrderedDict()
-
-        for k, v in checkpoint["state_dict"].items():
-            # print(k)
-            if 'mu_Swin2' in k:
-                print(k)
-                continue
-
-            if 'sigma_Swin2' in k:
-                print(k)
-                continue
-
-            if 'LRP_Swin2' in k:
-                print(k)
-                continue
-
-            if 'mu_layers' in k:
-                print(k)
-                continue
-            # k = k[7:]
-            new_state_dict[k]=v
 
         net.load_state_dict(new_state_dict) # ,strict=False
 
