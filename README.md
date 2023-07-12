@@ -28,3 +28,17 @@ cd image-compression
 pip install -e .
 pip install -e '.[dev]'
 ```
+
+## Usage
+
+### Dataset
+If you wanna choice the same dataset like our paper, please install fiftyone.
+
+```bash
+pip install fiftyone
+```
+Then use the downloader_openimages.py to download the training images. You need to setup the path for your own dataset at .py
+
+```bash
+python downloader_openimages.py
+```
