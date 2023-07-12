@@ -42,3 +42,25 @@ Then use the downloader_openimages.py to download the training images. You need 
 ```bash
 python downloader_openimages.py
 ```
+#### Data Structure
+Please put the training and validation data into the right path, or you need to fix the datasets/utils.py
+
+- rootdir/
+    - train/
+        - data/   
+            - img000.png
+            - img001.png
+    - test/
+        - data/  
+            - img000.png
+            - img001.png
+
+### Pre-trained Model
+Right now, we just share one checkpoints, If you need all points, you can contract Tshen2@scu.edu
+
+[lambda = 0.0035](https://drive.google.com/file/d/1tRsx-ek8O2lXlcLdMnQ9q5sD-V_4nuGQ/view?usp=drive_link) 
+
+
+
+
+
