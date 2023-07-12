@@ -37,14 +37,10 @@ import compressai
 
 from compressai.zoo import load_state_dict, models
 
-from compressai.models.retinanet.dataloader import CocoDataset, Resizer, Normalizer
-
-from pycocotools.cocoeval import COCOeval
-import gc
 
 # from ptflops import get_model_complexity_info
-from fvcore.nn import flop_count_table
-from fvcore.nn import FlopCountAnalysis
+# from fvcore.nn import flop_count_table
+# from fvcore.nn import FlopCountAnalysis
 
 torch.backends.cudnn.deterministic = True
 torch.set_num_threads(1)
@@ -139,13 +135,9 @@ def inference(model, x, filename, recon_path):
 def inference_entropy_estimation(model, x, context, filename, recon_path):
     input_image = x['img']
     input_image = input_image.unsqueeze(0)
-    # begin = 100
-    # size = 640
-    # x = x[:,:,begin:begin+size,begin:begin+size]
+
     num_pixels = input_image.size(0) * input_image.size(2) * input_image.size(3)
 
-    # x = x.unsqueeze(0)
-    # print(x.shape)
     h, w = input_image.size(2), input_image.size(3)
     p = 64  # maximum 6 strides of 2
     new_h = (h + p - 1) // p * p
@@ -162,49 +154,14 @@ def inference_entropy_estimation(model, x, context, filename, recon_path):
     )
     # print(filename,x.shape,x_padded.shape)
     start = time.time()
-    # img_size = 256
-    # b = x.unfold(2,img_size,img_size).unfold(3,img_size,img_size)
-    # c = b.permute(0,2,3,1,4,5).contiguous().view(-1,3,img_size,img_size)
-    # out_net = model.forward(c)
-    # grid_img = torchvision.utils.make_grid(out_net["x_hat"], nrow=x.size(3)//img_size,padding=0)
-    # grid_img = grid_img.unsqueeze(0)
-    # print(grid_img.shape,x.shape)
-    if context == None:
-        out_net = model.forward(x_padded)
-    else:
-        context = context.unsqueeze(0)
-        # context = context[:,:,begin:begin+size,begin:begin+size]
-        h_c, w_c = context.size(2), context.size(3)
-        p = 64  # maximum 6 strides of 2
-        distance_h = h - h_c
-        distance_w = w- w_c
-
-        # new_h_c = (h_c + p - 1) // p * p
-        # new_w_c = (w_c + p - 1) // p * p
-        padding_left_c = padding_left + distance_w // 2
-        padding_right_c = padding_right + (distance_w - distance_w // 2)
-        padding_top_c = padding_top +  distance_h // 2
-        padding_bottom_c = padding_bottom + (distance_h - distance_h // 2)
-        context = F.pad(
-                    context,
-                    (padding_left_c, padding_right_c, padding_top_c, padding_bottom_c),
-                    mode="constant",
-                    value=0,
-                )
-        # print(x_padded.shape,context.shape)
-        out_net = model.forward(x_padded,context)
-
-    scale = x['scale']
-    scores, labels, boxes = out_net["scores"], out_net["labels"], out_net["boxes"]
-    boxes /= scale
 
 
+    out_net = model.forward(x_padded)
 
-
-    # grid_img = out_net["x_hat"]
-    # grid_img = F.pad(
-    #     grid_img, (-padding_left, -padding_right, -padding_top, -padding_bottom)
-    # )
+    grid_img = out_net["x_hat"]
+    grid_img = F.pad(
+        grid_img, (-padding_left, -padding_right, -padding_top, -padding_bottom)
+    )
     
     elapsed_time = time.time() - start
 
@@ -215,17 +172,17 @@ def inference_entropy_estimation(model, x, context, filename, recon_path):
     )
 
     # ms_ssim(x, grid_img, data_range=1.0)
-    print(filename,"bpp", bpp.item())
+    print(filename,"bpp", bpp.item(),psnr(x, grid_img),ms_ssim(x, grid_img, data_range=1.0))
     # print('num_pixels',num_pixels)
     # for likelihoods in out_net["likelihoods"].values():
     #     tmpBPP = torch.log(likelihoods).sum() / (-math.log(2) * num_pixels)
     #     print(tmpBPP)
 
-    # reconstruct(grid_img, filename, recon_path)
+    reconstruct(grid_img, filename, recon_path)
 
     return {
-        # "psnr": psnr(x, grid_img), # out_net["x_hat"]
-        # "ms-ssim": ms_ssim(x, grid_img, data_range=1.0).item(),
+        "psnr": psnr(x, grid_img), # out_net["x_hat"]
+        "ms-ssim": ms_ssim(x, grid_img, data_range=1.0).item(),
         "bpp": bpp.item(),
         "encoding_time": elapsed_time / 2.0,  # broad estimation
         "decoding_time": elapsed_time / 2.0,
@@ -241,126 +198,21 @@ def load_checkpoint(arch: str, checkpoint_path: str) -> nn.Module:
 def eval_model(model, filepaths, entropy_estimation=True, half=False, recon_path='reconstruction'):
     device = next(model.parameters()).device
     metrics = defaultdict(float)
-    # start collecting results
-    results = []
-    image_ids = []
-    bpps = 0
-    pixels = 0
-    with torch.no_grad():
-        for index in range(1,5000): # len(filepaths)
 
-            x = filepaths[index]
-            input_image = x['img'].to(device)
-            input_image = input_image.unsqueeze(0)
-            input_image = input_image.permute(0, 3, 1, 2).contiguous()
-            num_pixels = input_image.size(0) * input_image.size(2) * input_image.size(3)
-
-            # macs, params = get_model_complexity_info(model, (3, input_image.size(2), input_image.size(3)), as_strings=True,
-            #                                print_per_layer_stat=True, verbose=True)
-
-            # print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
-            # print('{:<30}  {:<8}'.format('Number of parameters: ', params))
-            # flops = FlopCountAnalysis(model, input_image)
-            # print(flop_count_table(flops))
-            # break
-            # start = time.time()
-            out_net = model.forward(input_image)
-            # elapsed_time = time.time() - start
-            # print("encoding_time",elapsed_time)
-            # break
-            scale = x['scale']
-            scores, labels, boxes = out_net["scores"], out_net["labels"], out_net["boxes"]
-            boxes /= scale
-            bpp = sum(
-                    (torch.log(likelihoods).sum() / (-math.log(2) * num_pixels))
-                    for likelihoods in out_net["likelihoods"].values()
-                )
-            # bpp = 0
-            bpps += float(bpp)
-            pixels += int(num_pixels)
-            print(index,'/',len(filepaths), 'bpp = ',bpp,'pixels = ',num_pixels)
-            # print('{}/{}'.format(index, len(filepaths)), end='\r')
-
-            scores = scores.cpu()
-            labels = labels.cpu()
-            boxes = boxes.cpu()
-
-            if boxes.shape[0] > 0:
-                # change to (x, y, w, h) (MS COCO standard)
-                boxes[:, 2] -= boxes[:, 0]
-                boxes[:, 3] -= boxes[:, 1]
-
-                # compute predicted labels and scores
-                # for box, score, label in zip(boxes[0], scores[0], labels[0]):
-                for box_id in range(boxes.shape[0]):
-                    score = float(scores[box_id])
-                    label = int(labels[box_id])
-                    box = boxes[box_id, :]
-
-                    # scores are sorted, so we can break
-                    if score < 0.05:
-                        break
-
-                    # append detection for each positively labeled class
-                    image_result = {
-                        'image_id': filepaths.image_ids[index],
-                        'category_id': filepaths.label_to_coco_label(label),
-                        'score': float(score),
-                        'bbox': box.tolist(),
-                    }
-                    print(index, '/', len(filepaths), 'bpp = ', float(bpp), 'pixels = ', num_pixels,'category_id',
-                          filepaths.label_to_coco_label(label), 'score = ',float(score),'bbox', box.tolist() )
-                    # append detection to results
-                    results.append(image_result)
-                    # json.dump(image_result, open('{}_bbox_results.json'.format(filepaths.set_name), 'a+'), indent=4)
-
-                    # append image to list of processed images
-            image_ids.append(filepaths.image_ids[index])
-
-            # del boxes
-            # del labels
-            # del scores
-            # del bpp
-            # del input_image
-            # del x
-            # gc.collect()
-            # torch.cuda.empty_cache()
-    print('average bpp',bpps/len(filepaths),'average pixels = ',pixels/len(filepaths))
-    # write output
-    json.dump(results, open('{}_bbox_results.json'.format(filepaths.set_name), 'w'), indent=4)
-
-    # load results in COCO evaluation tool
-    coco_true = filepaths.coco
-    coco_pred = coco_true.loadRes('{}_bbox_results.json'.format(filepaths.set_name))
-
-    # run COCO evaluation
-    coco_eval = COCOeval(coco_true, coco_pred, 'bbox')
-    coco_eval.params.imgIds = image_ids
-    coco_eval.evaluate()
-    coco_eval.accumulate()
-    coco_eval.summarize()
-
-        # x = read_image(f).to(device)
-        # context = None
-
-        # context_path = f.split("/")
-        # context_path[-2] = 'L_GAN_x4_decompress'
-        # context_path = os.path.join(*context_path)
-        # # print(f)
-        # # print(context_path)
-        # context = read_image('/'+context_path).to(device)
-
-    #     if not entropy_estimation:
-    #         if half:
-    #             model = model.half()
-    #             x = x.half()
-    #         rv = inference(model, x, _filename, recon_path)
-    #     else:
-    #         rv = inference_entropy_estimation(model, x,context , _filename, recon_path)
-    #     for k, v in rv.items():
-    #         metrics[k] += v
-    # for k, v in metrics.items():
-    #     metrics[k] = v / len(filepaths)
+    for f in filepaths:
+        _filename  = f.split('/')[-1]
+        x = read_image(f).to(device)
+        if not entropy_estimation:
+            if half:
+                model = model.half()
+                x = x.half()
+            rv = inference(model, x, _filename, recon_path)
+        else:
+            rv = inference_entropy_estimation(model, x , _filename, recon_path)
+        for k, v in rv.items():
+            metrics[k] += v
+    for k, v in metrics.items():
+        metrics[k] = v / len(filepaths)
 
     return metrics
 
@@ -369,15 +221,12 @@ def setup_args():
     parent_parser = argparse.ArgumentParser()
 
     # Common options.
-    # original : /media/tianma/0403b42c-caba-4ab7-a362-c335a178175e/supervised-compression-main/dataset/coco2017/
-    # BGP : /media/tianma/0403b42c-caba-4ab7-a362-c335a178175e/BPG_val2017/decompress/qp41
-    # VTM :  /media/tianma/0403b42c-caba-4ab7-a362-c335a178175e/val2017/decompress
-    parent_parser.add_argument("-d", "--dataset",default='/media/tianma/0403b42c-caba-4ab7-a362-c335a178175e/supervised-compression-main/dataset/coco2017/', type=str, help="dataset path")
+    parent_parser.add_argument("-d", "--dataset",default='/data/Dataset/', type=str, help="dataset path")
     parent_parser.add_argument("-r", "--recon_path", type=str, default="reconstruction", help="where to save recon img")
     parent_parser.add_argument(
         "-a",
         "--architecture",
-        default='cnn2',
+        default='stf8',
         type=str,
         choices=models.keys(),
         help="model architecture",
@@ -426,11 +275,11 @@ def main(argv):
     parser = setup_args()
     args = parser.parse_args(argv)
 
-    filepaths = CocoDataset(args.dataset, set_name='val2017', transform=transforms.Compose([Normalizer(), Resizer()]))
-    # filepaths = collect_images(args.dataset)
-    # if len(filepaths) == 0:
-    #     print("Error: no images found in directory.", file=sys.stderr)
-    #     sys.exit(1)
+    # filepaths = CocoDataset(args.dataset, set_name='val2017', transform=transforms.Compose([Normalizer(), Resizer()]))
+    filepaths = collect_images(args.dataset)
+    if len(filepaths) == 0:
+        print("Error: no images found in directory.", file=sys.stderr)
+        sys.exit(1)
 
     compressai.set_entropy_coder(args.entropy_coder)
 
@@ -446,20 +295,20 @@ def main(argv):
 
     model.update(force=True)
 
-    metrics = eval_model(model, filepaths, args.entropy_estimation, args.half, args.recon_path)
-    # for run in runs:
-    #     if args.verbose:
-    #         sys.stderr.write(log_fmt.format(*opts, run=run))
-    #         sys.stderr.flush()
-    #     model = load_func(*opts, run)
-    #     if args.cuda and torch.cuda.is_available():
-    #         model = model.to("cuda:0")
-    #
-    #     model.update(force=True)
-    #
-    #     metrics = eval_model(model, filepaths, args.entropy_estimation, args.half, args.recon_path)
-        # for k, v in metrics.items():
-        #     results[k].append(v)
+    # metrics = eval_model(model, filepaths, args.entropy_estimation, args.half, args.recon_path)
+    for run in runs:
+        if args.verbose:
+            sys.stderr.write(log_fmt.format(*opts, run=run))
+            sys.stderr.flush()
+        model = load_func(*opts, run)
+        if args.cuda and torch.cuda.is_available():
+            model = model.to("cuda:0")
+
+        model.update(force=True)
+
+        metrics = eval_model(model, filepaths, args.entropy_estimation, args.half, args.recon_path)
+        for k, v in metrics.items():
+            results[k].append(v)
 
     if args.verbose:
         sys.stderr.write("\n")

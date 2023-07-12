@@ -13,15 +13,11 @@
 # limitations under the License.
 
 
-from compressai.models import WACNN2,conditionalZigzag,SymmetricalTransFormer5
+from compressai.models import SymmetricalTransFormer5
 
 from .pretrained import load_pretrained as load_state_dict
 
 models = {
 
     'stf8': SymmetricalTransFormer5,
-
-    'czigzag': conditionalZigzag, 
-
-    'cnn2': WACNN2,
 }

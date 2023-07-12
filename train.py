@@ -91,18 +91,14 @@ def configure_optimizers(net, args):
     parameters = {
         n
         for n, p in net.named_parameters()
-        if not n.endswith(".quantiles") and p.requires_grad and not "teacherNet" and not "studentNet" in n
+        if not n.endswith(".quantiles") and p.requires_grad
     }
     aux_parameters = {
         n
         for n, p in net.named_parameters()
-        if n.endswith(".quantiles") and p.requires_grad and not "teacherNet" and not "studentNet" in n
+        if n.endswith(".quantiles") and p.requires_grad
     }
 
-    aux_parameters = []
-    for name, param in net.named_parameters():
-        if param.requires_grad and name.endswith(".quantiles"):
-            aux_parameters.append(name)
     # # print(parameters)
     parameters = set(parameters)
     aux_parameters = set(aux_parameters)

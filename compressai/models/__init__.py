@@ -15,7 +15,3 @@
 
 
 from .stf8 import SymmetricalTransFormer5
-
-from .czigzag import conditionalZigzag
-
-from .cnn2 import WACNN2
