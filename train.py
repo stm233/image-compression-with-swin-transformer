@@ -147,7 +147,7 @@ def train_one_epoch(
         aux_loss.backward()
         aux_optimizer.step()
 
-        if i % 100 == 0:
+        if i % 500 == 0:
             enc_time = time.time() - start
             start = time.time()
             print(
@@ -177,7 +177,7 @@ def test_epoch(epoch, test_dataloader, model, criterion):
         for d in test_dataloader:
             d = d.to(device)
             out_net = model(d)
-            out_criterion = criterion(out_net, d)
+            out_criterion = criterion(d,out_net)
 
 
             aux_loss.update(model.aux_loss())
@@ -233,7 +233,7 @@ def parse_args(argv):
         "-n",
         "--num-workers",
         type=int,
-        default=6,
+        default=16,
         help="Dataloaders threads (default: %(default)s)",
     )
     parser.add_argument(
@@ -244,12 +244,12 @@ def parse_args(argv):
         help="Bit-rate distortion parameter (default: %(default)s)",
     )
     parser.add_argument(
-        "--batch-size", type=int, default=12, help="Batch size (default: %(default)s)"
+        "--batch-size", type=int, default=32, help="Batch size (default: %(default)s)"
     )
     parser.add_argument(
         "--test-batch-size",
         type=int,
-        default=12,
+        default=32,
         help="Test batch size (default: %(default)s)",
     )
     parser.add_argument(
